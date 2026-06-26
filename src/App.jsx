@@ -66,7 +66,21 @@ function AppContent() {
     settingsManager.set('strokeColor', color);
   }, []);
 
-  const handleToolbarAction = useCallback((action) => {
+  const [activeTool, setActiveTool] = useState('draw');
+  const [shapeRecognitionEnabled, setShapeRecognitionEnabled] = useState(false);
+
+  const handleToolbarAction = useCallback((action, value) => {
+    console.warn('[APP] handleToolbarAction called:', action, value);
+    if (action === 'draw' || action === 'eraser' || action === 'shape') {
+      setActiveTool(action);
+      return;
+    }
+    if (action === 'shapeRecognition') {
+      console.warn('[APP] Setting shape recognition to:', value);
+      setShapeRecognitionEnabled(value);
+      showToast(`Shape Recognition: ${value ? 'ON' : 'OFF'}`, 'info');
+      return;
+    }
     switch (action) {
       case 'undo':
         canvasRef.current?.undo();
@@ -118,12 +132,21 @@ function AppContent() {
 
   return (
     <div style={styles.container}>
+      <div style={{
+        position: 'fixed', top: 10, right: 10, zIndex: 200,
+        padding: '8px 12px', background: 'rgba(0,0,0,0.8)',
+        borderRadius: 8, color: shapeRecognitionEnabled ? '#00ff88' : '#ff1744',
+        fontFamily: 'monospace', fontSize: 12, fontWeight: 'bold'
+      }}>
+        Shape: {shapeRecognitionEnabled ? 'ON' : 'OFF'}
+      </div>
       <DrawingCanvas
         ref={canvasRef}
         width={width}
         height={height}
         strokeColor={strokeColor}
         strokeWidth={strokeWidth}
+        shapeRecognitionEnabled={shapeRecognitionEnabled}
       />
 
       <FloatingToolbar
@@ -136,6 +159,7 @@ function AppContent() {
         onOpacityChange={setStrokeOpacity}
         onSettings={() => setShowSettings(true)}
         onHelp={() => setShowHelp(true)}
+        activeTool={activeTool}
       />
 
       <input

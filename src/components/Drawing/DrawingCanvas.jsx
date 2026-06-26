@@ -1,13 +1,333 @@
-// Phase v21: Working detection + simple pinch-to-draw
-// Based on the working skeleton visualization
+// Phase v23: Shape Recognition Toggle
+// - Always in draw mode
+// - Shape recognition toggle (ON/OFF)
+// - Runs after stroke completion (pinch release)
+// - Supports: circle, ellipse, square, rectangle, triangle, line, arrow
 
 import React, { useRef, useEffect, useState } from 'react';
 import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
 
+// ─── Shape Recognition Engine ───
+function recognizeShape(points) {
+  console.warn('[SHAPE] recognizeShape called with', points.length, 'points');
+  if (points.length < 10) {
+    console.warn('[SHAPE] Too few points, returning null');
+    return null;
+  }
+
+  // Simplify stroke using Ramer-Douglas-Peucker
+  const simplified = rdpSimplify(points, 5);
+  console.warn('[SHAPE] Simplified to', simplified.length, 'points');
+  if (simplified.length < 3) {
+    console.warn('[SHAPE] Too few simplified points, returning null');
+    return null;
+  }
+
+  // Bounding box
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of points) {
+    minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+    minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+  }
+  const width = maxX - minX;
+  const height = maxY - minY;
+  const centerX = (minX + maxX) / 2;
+  const centerY = (minY + maxY) / 2;
+  const aspectRatio = width / (height || 1);
+
+  // Check if closed shape (start near end)
+  const start = points[0];
+  const end = points[points.length - 1];
+  const isClosed = Math.sqrt((start.x - end.x) ** 2 + (start.y - end.y) ** 2) < Math.max(width, height) * 0.3;
+
+  // Calculate perimeter and area
+  let perimeter = 0;
+  for (let i = 1; i < points.length; i++) {
+    perimeter += Math.sqrt((points[i].x - points[i-1].x) ** 2 + (points[i].y - points[i-1].y) ** 2);
+  }
+
+  // Check convex hull for triangle detection
+  const hull = convexHull(points);
+
+  // Scores for each shape
+  const scores = {};
+
+  // Circle score: check if all points are roughly equidistant from center
+  if (isClosed && width > 20 && height > 20) {
+    const radii = points.map(p => Math.sqrt((p.x - centerX) ** 2 + (p.y - centerY) ** 2));
+    const avgRadius = radii.reduce((a, b) => a + b, 0) / radii.length;
+    const radiusVariance = radii.reduce((sum, r) => sum + Math.abs(r - avgRadius), 0) / radii.length;
+    const circularity = 1 - Math.min(radiusVariance / (avgRadius || 1), 1);
+    scores.circle = circularity * (aspectRatio > 0.7 && aspectRatio < 1.3 ? 1 : 0.5);
+  }
+
+  // Ellipse score: like circle but allows different aspect ratios
+  if (isClosed && width > 20 && height > 20) {
+    const rx = width / 2;
+    const ry = height / 2;
+    const ellipseError = points.reduce((sum, p) => {
+      const normalizedX = (p.x - centerX) / (rx || 1);
+      const normalizedY = (p.y - centerY) / (ry || 1);
+      return sum + Math.abs(normalizedX ** 2 + normalizedY ** 2 - 1);
+    }, 0) / points.length;
+    scores.ellipse = Math.max(0, 1 - ellipseError) * (aspectRatio < 0.3 || aspectRatio > 3 ? 0.7 : 0.3);
+  }
+
+  // Rectangle score: check if simplified points form ~4 corners with right angles
+  if (isClosed && simplified.length >= 4 && simplified.length <= 8) {
+    const corners = simplified;
+    let rightAngleCount = 0;
+    for (let i = 0; i < corners.length; i++) {
+      const prev = corners[(i - 1 + corners.length) % corners.length];
+      const curr = corners[i];
+      const next = corners[(i + 1) % corners.length];
+      const angle = Math.abs(calculateAngle(prev, curr, next));
+      if (angle > 70 && angle < 110) rightAngleCount++;
+    }
+    const rectScore = rightAngleCount / corners.length;
+    scores.rectangle = rectScore * (Math.abs(aspectRatio - 1) > 0.2 ? 1 : 0.8);
+    scores.square = rectScore * (Math.abs(aspectRatio - 1) < 0.2 ? 1 : 0);
+  }
+
+  // Triangle score: check if convex hull has ~3 vertices
+  if (isClosed && hull.length === 3 && width > 20 && height > 20) {
+    scores.triangle = 0.9;
+  }
+
+  // Line score: check if points are roughly collinear
+  if (!isClosed && width > 20 || height > 20) {
+    const lineFit = fitLine(points);
+    scores.line = lineFit.r2;
+
+    // Arrow score: check if endpoints have arrowhead shape
+    if (lineFit.r2 > 0.85 && points.length > 20) {
+      const arrowScore = detectArrow(points, lineFit);
+      if (arrowScore > 0.6) scores.arrow = arrowScore;
+    }
+  }
+
+  // Find best match
+  let bestShape = null;
+  let bestScore = 0;
+  for (const [shape, score] of Object.entries(scores)) {
+    if (score > bestScore) {
+      bestScore = score;
+      bestShape = shape;
+    }
+  }
+
+  if (bestScore < 0.4) {
+    console.warn('[SHAPE] No shape recognized. Best score:', bestScore, 'scores:', scores);
+    return null;
+  }
+
+  console.warn('[SHAPE] Recognized:', bestShape, 'confidence:', Math.round(bestScore * 100));
+
+  return {
+    shape: bestShape,
+    confidence: Math.round(bestScore * 100),
+    bounds: { minX, maxX, minY, maxY, centerX, centerY, width, height }
+  };
+}
+
+function rdpSimplify(points, epsilon) {
+  if (points.length <= 2) return points;
+
+  function findFarthest(start, end) {
+    let maxDist = 0;
+    let index = -1;
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const len2 = dx * dx + dy * dy;
+
+    for (let i = start + 1; i < end; i++) {
+      const t = len2 === 0 ? 0 : ((points[i].x - start.x) * dx + (points[i].y - start.y) * dy) / len2;
+      const projX = start.x + t * dx;
+      const projY = start.y + t * dy;
+      const dist = Math.sqrt((points[i].x - projX) ** 2 + (points[i].y - projY) ** 2);
+      if (dist > maxDist) {
+        maxDist = dist;
+        index = i;
+      }
+    }
+    return { index, dist: maxDist };
+  }
+
+  function simplify(start, end) {
+    const { index, dist } = findFarthest(start, end);
+    if (dist > epsilon && index !== -1) {
+      return [...simplify(start, index), ...simplify(index, end).slice(1)];
+    }
+    return [points[start], points[end]];
+  }
+
+  return simplify(0, points.length - 1);
+}
+
+function convexHull(points) {
+  if (points.length < 3) return points;
+  const sorted = [...points].sort((a, b) => a.x - b.x || a.y - b.y);
+  const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+
+  const lower = [];
+  for (const p of sorted) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) {
+      lower.pop();
+    }
+    lower.push(p);
+  }
+
+  const upper = [];
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const p = sorted[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) {
+      upper.pop();
+    }
+    upper.push(p);
+  }
+
+  lower.pop();
+  upper.pop();
+  return [...lower, ...upper];
+}
+
+function calculateAngle(a, b, c) {
+  const ba = { x: a.x - b.x, y: a.y - b.y };
+  const bc = { x: c.x - b.x, y: c.y - b.y };
+  const dot = ba.x * bc.x + ba.y * bc.y;
+  const magBA = Math.sqrt(ba.x ** 2 + ba.y ** 2);
+  const magBC = Math.sqrt(bc.x ** 2 + bc.y ** 2);
+  if (magBA === 0 || magBC === 0) return 0;
+  const cos = dot / (magBA * magBC);
+  return Math.acos(Math.max(-1, Math.min(1, cos))) * 180 / Math.PI;
+}
+
+function fitLine(points) {
+  const n = points.length;
+  const sumX = points.reduce((s, p) => s + p.x, 0);
+  const sumY = points.reduce((s, p) => s + p.y, 0);
+  const meanX = sumX / n;
+  const meanY = sumY / n;
+
+  let num = 0, den = 0;
+  for (const p of points) {
+    num += (p.x - meanX) * (p.y - meanY);
+    den += (p.x - meanX) ** 2;
+  }
+
+  const slope = den === 0 ? 0 : num / den;
+  const intercept = meanY - slope * meanX;
+
+  // R² calculation
+  const ssTot = points.reduce((s, p) => s + (p.y - meanY) ** 2, 0);
+  const ssRes = points.reduce((s, p) => s + (p.y - (slope * p.x + intercept)) ** 2, 0);
+  const r2 = ssTot === 0 ? 1 : 1 - ssRes / ssTot;
+
+  return { slope, intercept, r2 };
+}
+
+function detectArrow(points, lineFit) {
+  // Check if one end has a V-shape (arrowhead)
+  const start = points[0];
+  const end = points[points.length - 1];
+  const midIdx = Math.floor(points.length / 2);
+
+  // Check start end for arrowhead
+  const startRegion = points.slice(0, Math.min(10, midIdx));
+  const endRegion = points.slice(Math.max(midIdx, points.length - 10));
+
+  function hasArrowhead(region, tip) {
+    if (region.length < 5) return 0;
+    const spread = region.reduce((max, p) => {
+      const dist = Math.abs((p.y - lineFit.intercept - lineFit.slope * p.x) / Math.sqrt(1 + lineFit.slope ** 2));
+      return Math.max(max, dist);
+    }, 0);
+    return Math.min(spread / 30, 1); // Normalize
+  }
+
+  const startArrow = hasArrowhead(startRegion, start);
+  const endArrow = hasArrowhead(endRegion, end);
+
+  return Math.max(startArrow, endArrow);
+}
+
+function drawRecognizedShape(ctx, result, color, width) {
+  const { shape, bounds } = result;
+  const { centerX, centerY, width: w, height: h } = bounds;
+
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  switch (shape) {
+    case 'circle': {
+      const radius = Math.max(w, h) / 2;
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+      ctx.stroke();
+      break;
+    }
+    case 'ellipse': {
+      ctx.beginPath();
+      ctx.ellipse(centerX, centerY, w / 2, h / 2, 0, 0, 2 * Math.PI);
+      ctx.stroke();
+      break;
+    }
+    case 'square': {
+      const size = Math.max(w, h);
+      ctx.strokeRect(centerX - size / 2, centerY - size / 2, size, size);
+      break;
+    }
+    case 'rectangle': {
+      ctx.strokeRect(centerX - w / 2, centerY - h / 2, w, h);
+      break;
+    }
+    case 'triangle': {
+      ctx.beginPath();
+      ctx.moveTo(centerX, centerY - h / 2);
+      ctx.lineTo(centerX - w / 2, centerY + h / 2);
+      ctx.lineTo(centerX + w / 2, centerY + h / 2);
+      ctx.closePath();
+      ctx.stroke();
+      break;
+    }
+    case 'line': {
+      ctx.beginPath();
+      ctx.moveTo(bounds.minX, bounds.minY);
+      ctx.lineTo(bounds.maxX, bounds.maxY);
+      ctx.stroke();
+      break;
+    }
+    case 'arrow': {
+      // Draw line with arrowhead
+      ctx.beginPath();
+      ctx.moveTo(bounds.minX, bounds.minY);
+      ctx.lineTo(bounds.maxX, bounds.maxY);
+      ctx.stroke();
+      // Arrowhead at end
+      const angle = Math.atan2(bounds.maxY - bounds.minY, bounds.maxX - bounds.minX);
+      const arrowLen = 20;
+      ctx.beginPath();
+      ctx.moveTo(bounds.maxX, bounds.maxY);
+      ctx.lineTo(bounds.maxX - arrowLen * Math.cos(angle - Math.PI / 6), bounds.maxY - arrowLen * Math.sin(angle - Math.PI / 6));
+      ctx.moveTo(bounds.maxX, bounds.maxY);
+      ctx.lineTo(bounds.maxX - arrowLen * Math.cos(angle + Math.PI / 6), bounds.maxY - arrowLen * Math.sin(angle + Math.PI / 6));
+      ctx.stroke();
+      break;
+    }
+  }
+  ctx.restore();
+}
+
+// ─── Main Component ───
 export const DrawingCanvas = React.forwardRef(function DrawingCanvas(
-  { width, height, strokeColor, strokeWidth },
+  { width, height, strokeColor, strokeWidth, shapeRecognitionEnabled = false },
   ref
 ) {
+  // Visual indicator for shape recognition state
+  const [shapeIndicator, setShapeIndicator] = useState('OFF');
   const videoRef = useRef(null);
   const persistentCanvasRef = useRef(null);
   const activeCanvasRef = useRef(null);
@@ -15,17 +335,26 @@ export const DrawingCanvas = React.forwardRef(function DrawingCanvas(
   const handCountRef = useRef(null);
   const stateRef = useRef(null);
   const pinchRef = useRef(null);
+  const shapeRef = useRef(null);
 
   const landmarkerRef = useRef(null);
   const strokesRef = useRef([]);
   const currentStrokeRef = useRef([]);
   const isDrawingRef = useRef(false);
   const lastTimestampRef = useRef(0);
+  const shapeEnabledRef = useRef(shapeRecognitionEnabled);
+
+  // Keep ref in sync with prop
+  useEffect(() => {
+    shapeEnabledRef.current = shapeRecognitionEnabled;
+    setShapeIndicator(shapeRecognitionEnabled ? 'ON' : 'OFF');
+  }, [shapeRecognitionEnabled]);
 
   const setStatus = (text) => { if (statusRef.current) statusRef.current.textContent = text; };
   const setHandCount = (n) => { if (handCountRef.current) handCountRef.current.textContent = 'Hands: ' + n; };
   const setState = (s) => { if (stateRef.current) stateRef.current.textContent = 'State: ' + s; };
   const setPinch = (d) => { if (pinchRef.current) pinchRef.current.textContent = 'Pinch: ' + d.toFixed(3); };
+  const setShape = (s) => { if (shapeRef.current) shapeRef.current.textContent = s; };
 
   useEffect(() => {
     let mounted = true;
@@ -131,7 +460,7 @@ export const DrawingCanvas = React.forwardRef(function DrawingCanvas(
           const indexX = (1 - index.x) * aCanvas.width;
           const indexY = index.y * aCanvas.height;
           
-          aCtx.strokeStyle = pinchDist < 0.15 ? '#00ff00' : '#ff0000';
+          aCtx.strokeStyle = pinchDist < 0.12 ? '#00ff00' : '#ff0000';
           aCtx.lineWidth = 3;
           aCtx.beginPath();
           aCtx.moveTo(thumbX, thumbY);
@@ -245,14 +574,46 @@ export const DrawingCanvas = React.forwardRef(function DrawingCanvas(
             aCtx.fill();
           } else {
             if (isDrawingRef.current) {
+              // Stroke just ended — run shape recognition if enabled
               isDrawingRef.current = false;
               if (currentStrokeRef.current.length >= 2) {
-                strokesRef.current.push({
-                  points: [...currentStrokeRef.current],
-                  color: strokeColor,
-                  width: strokeWidth
-                });
-                drawStroke(pCtx, currentStrokeRef.current, strokeColor, strokeWidth);
+                const strokePoints = [...currentStrokeRef.current];
+                
+  // Check if shape recognition is enabled
+  if (shapeEnabledRef.current) {
+    console.warn('[SHAPE] Recognition enabled, points:', strokePoints.length);
+    const result = recognizeShape(strokePoints);
+    console.warn('[SHAPE] Result:', result);
+    if (result) {
+                    // Replace with recognized shape
+                    strokesRef.current.push({
+                      shape: result.shape,
+                      bounds: result.bounds,
+                      color: strokeColor,
+                      width: strokeWidth,
+                      confidence: result.confidence
+                    });
+                    drawRecognizedShape(pCtx, result, strokeColor, strokeWidth);
+                    setShape(`${result.shape} (${result.confidence}%)`);
+                    setTimeout(() => setShape(''), 2000);
+                  } else {
+                    // Keep original freehand stroke
+                    strokesRef.current.push({
+                      points: strokePoints,
+                      color: strokeColor,
+                      width: strokeWidth
+                    });
+                    drawStroke(pCtx, strokePoints, strokeColor, strokeWidth);
+                  }
+                } else {
+                  // Normal freehand drawing
+                  strokesRef.current.push({
+                    points: strokePoints,
+                    color: strokeColor,
+                    width: strokeWidth
+                  });
+                  drawStroke(pCtx, strokePoints, strokeColor, strokeWidth);
+                }
               }
               currentStrokeRef.current = [];
               setState('IDLE');
@@ -269,6 +630,13 @@ export const DrawingCanvas = React.forwardRef(function DrawingCanvas(
           aCtx.beginPath();
           aCtx.arc(smoothX, smoothY, isPinching ? 10 : 6, 0, 2 * Math.PI);
           aCtx.fill();
+
+          // Show shape recognition status
+          if (shapeEnabledRef.current) {
+            aCtx.fillStyle = '#00ff88';
+            aCtx.font = 'bold 14px monospace';
+            aCtx.fillText('📐 SHAPE ON', 20, aCanvas.height - 20);
+          }
         } else {
           // No hand detected
           if (isDrawingRef.current) {
@@ -316,34 +684,6 @@ export const DrawingCanvas = React.forwardRef(function DrawingCanvas(
       ctx.restore();
     }
 
-    function drawSkeleton(ctx, landmarks, w, h) {
-      const connections = [
-        [0,1],[1,2],[2,3],[3,4],
-        [0,5],[5,6],[6,7],[7,8],
-        [0,9],[9,10],[10,11],[11,12],
-        [0,13],[13,14],[14,15],[15,16],
-        [0,17],[17,18],[18,19],[19,20],
-        [5,9],[9,13],[13,17]
-      ];
-      ctx.strokeStyle = 'rgba(0, 229, 255, 0.4)';
-      ctx.lineWidth = 1;
-      for (const [a, b] of connections) {
-        const pa = landmarks[a];
-        const pb = landmarks[b];
-        if (!pa || !pb) continue;
-        ctx.beginPath();
-        ctx.moveTo((1 - pa.x) * w, pa.y * h);
-        ctx.lineTo((1 - pb.x) * w, pb.y * h);
-        ctx.stroke();
-      }
-      ctx.fillStyle = 'rgba(0, 229, 255, 0.6)';
-      for (const lm of landmarks) {
-        ctx.beginPath();
-        ctx.arc((1 - lm.x) * w, lm.y * h, 3, 0, 2 * Math.PI);
-        ctx.fill();
-      }
-    }
-
     return () => { mounted = false; };
   }, [strokeColor, strokeWidth]);
 
@@ -387,9 +727,14 @@ export const DrawingCanvas = React.forwardRef(function DrawingCanvas(
         <div ref={handCountRef}>Hands: 0</div>
         <div ref={stateRef}>State: IDLE</div>
         <div ref={pinchRef}>Pinch: 0</div>
+        <div ref={shapeRef} style={{ color: '#00ff88', minHeight: 18 }}></div>
+        <div style={{ color: shapeIndicator === 'ON' ? '#00ff88' : '#ff1744', fontWeight: 600 }}>
+          Shape: {shapeIndicator}
+        </div>
         <div style={{ marginTop: 8, color: '#888', fontSize: 11 }}>
           Pinch thumb+index to draw<br/>
-          Release to stop
+          Release to stop<br/>
+          Open palm to erase
         </div>
       </div>
     </div>

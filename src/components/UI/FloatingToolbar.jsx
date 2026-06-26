@@ -1,18 +1,20 @@
-// Phase 6: Floating Toolbar — Professional glassmorphism design
-// Redesigned layout: wider toolbar, horizontal sliders, consistent spacing, no overlaps
+// Phase v22: Horizontal Floating Toolbar — Top-center glassmorphism design
+// Redesigned from vertical sidebar to horizontal floating bar
 import React, { useState, useRef, useCallback } from 'react';
 
 const ACTIONS = [
+  { id: 'draw', icon: '✏️', label: 'Draw', section: 'tools', toggle: true },
+  { id: 'eraser', icon: '🧽', label: 'Eraser', section: 'tools', toggle: true },
   { id: 'undo', icon: '↩', label: 'Undo', shortcut: 'Ctrl+Z', section: 'history' },
   { id: 'redo', icon: '↪', label: 'Redo', shortcut: 'Ctrl+Shift+Z', section: 'history' },
-  { id: 'clear', icon: '🗑', label: 'Clear', shortcut: '', section: 'edit' },
-  { id: 'downloadPNG', icon: '🖼', label: 'PNG', shortcut: 'Ctrl+E', section: 'export' },
-  { id: 'exportSVG', icon: '📐', label: 'SVG', shortcut: '', section: 'export' },
+  { id: 'clear', icon: '🗑', label: 'Clear', section: 'edit' },
+  { id: 'shape', icon: '📐', label: 'Shapes', section: 'tools', toggle: true },
+  { id: 'downloadPNG', icon: '💾', label: 'Save PNG', shortcut: 'Ctrl+E', section: 'export' },
+  { id: 'exportSVG', icon: '📐', label: 'Export SVG', section: 'export' },
   { id: 'exportJSON', icon: '💾', label: 'Export', shortcut: 'Ctrl+S', section: 'export' },
   { id: 'importJSON', icon: '📂', label: 'Import', shortcut: 'Ctrl+O', section: 'export' },
-  { id: 'settings', icon: '⚙', label: 'Settings', shortcut: '', section: 'system' },
-  { id: 'help', icon: '?', label: 'Help', shortcut: '?', section: 'system' },
-  { id: 'debug', icon: '🐛', label: 'Debug', shortcut: '', section: 'system' },
+  { id: 'settings', icon: '⚙', label: 'Settings', section: 'system' },
+  { id: 'help', icon: '❓', label: 'Help', section: 'system' },
 ];
 
 const PRESET_COLORS = [
@@ -34,28 +36,31 @@ export function FloatingToolbar({
   onOpacityChange,
   onSettings,
   onHelp,
-  isPanMode = false
+  activeTool = 'draw'
 }) {
   const [recentColors, setRecentColors] = useState(() => {
     const saved = localStorage.getItem('airsketch_recent_colors');
     return saved ? JSON.parse(saved) : [];
   });
+  const [showColorPicker, setShowColorPicker] = useState(false);
+  const [showMore, setShowMore] = useState(false);
   const fileInputRef = useRef(null);
+  const colorBtnRef = useRef(null);
+  const [shapeRecognition, setShapeRecognition] = useState(false);
 
   const handleColorSelect = useCallback((color) => {
     onColorChange?.(color);
-    // Add to recent colors (max 8, no duplicates, move to front)
     setRecentColors(prev => {
       const filtered = prev.filter(c => c !== color);
       const updated = [color, ...filtered].slice(0, 8);
       localStorage.setItem('airsketch_recent_colors', JSON.stringify(updated));
       return updated;
     });
+    setShowColorPicker(false);
   }, [onColorChange]);
 
   const handleCustomColor = useCallback((e) => {
-    const color = e.target.value;
-    handleColorSelect(color);
+    handleColorSelect(e.target.value);
   }, [handleColorSelect]);
 
   const handleAction = useCallback((actionId) => {
@@ -63,8 +68,24 @@ export function FloatingToolbar({
       fileInputRef.current?.click();
       return;
     }
+    if (actionId === 'settings') {
+      onSettings?.();
+      return;
+    }
+    if (actionId === 'help') {
+      onHelp?.();
+      return;
+    }
+    if (actionId === 'shapeRecognition') {
+      console.warn('[TOOLBAR] shapeRecognition clicked, current:', shapeRecognition);
+      const newVal = !shapeRecognition;
+      setShapeRecognition(newVal);
+      console.warn('[TOOLBAR] calling onAction with:', 'shapeRecognition', newVal);
+      onAction?.('shapeRecognition', newVal);
+      return;
+    }
     onAction?.(actionId);
-  }, [onAction]);
+  }, [onAction, onSettings, onHelp, shapeRecognition]);
 
   const handleFileImport = useCallback((e) => {
     const file = e.target.files[0];
@@ -77,7 +98,8 @@ export function FloatingToolbar({
     e.target.value = '';
   }, [onAction]);
 
-  // Group actions by section for visual separators
+  // Group actions
+  const toolActions = ACTIONS.filter(a => a.section === 'tools');
   const historyActions = ACTIONS.filter(a => a.section === 'history');
   const editActions = ACTIONS.filter(a => a.section === 'edit');
   const exportActions = ACTIONS.filter(a => a.section === 'export');
@@ -94,105 +116,53 @@ export function FloatingToolbar({
         aria-hidden="true"
       />
 
+      {/* ─── Main Horizontal Toolbar ─── */}
       <div
         role="toolbar"
         aria-label="Drawing toolbar"
         style={styles.container}
       >
-        {/* ─── Gesture Info ─── */}
-        <div style={styles.section}>
-          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.5)', textAlign: 'center', padding: '4px 0' }}>
-            Pinch to draw<br/>Open hand to erase
-          </div>
+        {/* Tools Section */}
+        <div style={styles.group}>
+          {toolActions.map(action => (
+            <ToolbarButton
+              key={action.id}
+              onClick={() => handleAction(action.id)}
+              label={action.label}
+              active={activeTool === action.id}
+              toggle={action.toggle}
+              ariaLabel={action.label}
+            >
+              <span style={{ fontSize: 18 }}>{action.icon}</span>
+            </ToolbarButton>
+          ))}
         </div>
 
         <div style={styles.separator} />
 
-        {/* ─── Color Section ─── */}
-        <div style={styles.section}>
-          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.5)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>Color</div>
-          
-          {/* Preset color grid — 4×4 */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6, padding: '4px 2px', justifyItems: 'center' }}>
-            {PRESET_COLORS.map(c => (
-              <button
-                key={c}
-                onClick={() => handleColorSelect(c)}
-                title={c}
-                style={{
-                  width: 24,
-                  height: 24,
-                  borderRadius: '50%',
-                  backgroundColor: c,
-                  border: strokeColor === c ? '3px solid #fff' : '2px solid rgba(255,255,255,0.2)',
-                  cursor: 'pointer',
-                  padding: 0,
-                  flexShrink: 0,
-                  boxShadow: strokeColor === c ? '0 0 10px rgba(255,255,255,0.5)' : 'inset 0 1px 2px rgba(0,0,0,0.3)',
-                  transition: 'all 0.15s ease'
-                }}
-                aria-label={`Select color ${c}`}
-              />
-            ))}
-          </div>
-
-          {/* Custom color picker */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 4px', width: '100%' }}>
-            <label style={{ fontSize: 10, color: 'rgba(255,255,255,0.45)', textTransform: 'uppercase', letterSpacing: 0.8, fontWeight: 600 }}>Custom</label>
-            <input
-              type="color"
-              value={strokeColor}
-              onChange={handleCustomColor}
-              style={{
-                width: 32,
-                height: 32,
-                border: '2px solid rgba(255,255,255,0.3)',
-                borderRadius: '50%',
-                cursor: 'pointer',
-                padding: 0,
-                background: 'none'
-              }}
-              aria-label="Custom color picker"
-            />
-            <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.5)', fontFamily: 'monospace' }}>{strokeColor}</span>
-          </div>
-
-          {/* Recent colors */}
-          {recentColors.length > 0 && (
-            <div style={{ padding: '4px 2px', width: '100%' }}>
-              <div style={{ fontSize: 9, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>Recent</div>
-              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'center' }}>
-                {recentColors.map(c => (
-                  <button
-                    key={c}
-                    onClick={() => handleColorSelect(c)}
-                    title={c}
-                    style={{
-                      width: 20,
-                      height: 20,
-                      borderRadius: '50%',
-                      backgroundColor: c,
-                      border: strokeColor === c ? '2px solid #fff' : '1px solid rgba(255,255,255,0.2)',
-                      cursor: 'pointer',
-                      padding: 0,
-                      flexShrink: 0
-                    }}
-                    aria-label={`Select recent color ${c}`}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
+        {/* Color Picker Button */}
+        <div style={styles.group}>
+          <button
+            ref={colorBtnRef}
+            onClick={() => setShowColorPicker(v => !v)}
+            title="Color"
+            aria-label="Color picker"
+            aria-expanded={showColorPicker}
+            style={{
+              ...styles.colorBtn,
+              backgroundColor: strokeColor,
+              boxShadow: showColorPicker
+                ? '0 0 0 3px rgba(0, 229, 255, 0.5), 0 2px 8px rgba(0,0,0,0.3)'
+                : '0 2px 8px rgba(0,0,0,0.3)'
+            }}
+          />
         </div>
 
         <div style={styles.separator} />
 
-        {/* ─── Brush Settings ─── */}
-        <div style={styles.section}>
-          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.5)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>Brush</div>
-          
-          {/* Brush size slider */}
-          <div style={styles.sliderGroup}>
+        {/* Brush Settings — Compact Horizontal */}
+        <div style={styles.settingsGroup}>
+          <div style={styles.sliderRow}>
             <span style={styles.sliderLabel}>Size</span>
             <input
               type="range"
@@ -206,9 +176,7 @@ export function FloatingToolbar({
             />
             <span style={styles.sliderValue}>{strokeWidth.toFixed(1)}</span>
           </div>
-
-          {/* Opacity slider */}
-          <div style={styles.sliderGroup}>
+          <div style={styles.sliderRow}>
             <span style={styles.sliderLabel}>Opacity</span>
             <input
               type="range"
@@ -226,8 +194,8 @@ export function FloatingToolbar({
 
         <div style={styles.separator} />
 
-        {/* ─── History Actions ─── */}
-        <div style={styles.section}>
+        {/* History */}
+        <div style={styles.group}>
           {historyActions.map(action => (
             <ToolbarButton
               key={action.id}
@@ -247,15 +215,14 @@ export function FloatingToolbar({
 
         <div style={styles.separator} />
 
-        {/* ─── Edit Actions ─── */}
-        <div style={styles.section}>
+        {/* Edit */}
+        <div style={styles.group}>
           {editActions.map(action => (
             <ToolbarButton
               key={action.id}
               onClick={() => handleAction(action.id)}
               label={action.label}
-              shortcut={action.shortcut}
-              ariaLabel={`${action.label}${action.shortcut ? ` (${action.shortcut})` : ''}`}
+              ariaLabel={action.label}
             >
               <span style={{ fontSize: 16 }}>{action.icon}</span>
             </ToolbarButton>
@@ -264,8 +231,37 @@ export function FloatingToolbar({
 
         <div style={styles.separator} />
 
-        {/* ─── Export Actions ─── */}
-        <div style={styles.section}>
+        {/* Shape Recognition Toggle */}
+        <div style={styles.group}>
+          <button
+            onClick={() => handleAction('shapeRecognition')}
+            title={shapeRecognition ? 'Shape Recognition: ON' : 'Shape Recognition: OFF'}
+            aria-label="Shape Recognition toggle"
+            aria-pressed={shapeRecognition}
+            style={{
+              ...styles.button,
+              ...(shapeRecognition ? styles.buttonActive : {}),
+              width: 'auto',
+              padding: '0 12px',
+              gap: 6
+            }}
+          >
+            <span style={{ fontSize: 16 }}>📐</span>
+            <span style={{
+              fontSize: 10,
+              fontWeight: 600,
+              color: shapeRecognition ? '#00e5ff' : 'rgba(255,255,255,0.65)',
+              letterSpacing: 0.5
+            }}>
+              {shapeRecognition ? 'ON' : 'OFF'}
+            </span>
+          </button>
+        </div>
+
+        <div style={styles.separator} />
+
+        {/* Export */}
+        <div style={styles.group}>
           {exportActions.map(action => (
             <ToolbarButton
               key={action.id}
@@ -281,85 +277,155 @@ export function FloatingToolbar({
 
         <div style={styles.separator} />
 
-        {/* ─── System Actions ─── */}
-        <div style={styles.section}>
+        {/* System */}
+        <div style={styles.group}>
           {systemActions.map(action => (
             <ToolbarButton
               key={action.id}
               onClick={() => handleAction(action.id)}
               label={action.label}
-              shortcut={action.shortcut}
-              ariaLabel={`${action.label}${action.shortcut ? ` (${action.shortcut})` : ''}`}
+              ariaLabel={action.label}
             >
               <span style={{ fontSize: 16 }}>{action.icon}</span>
             </ToolbarButton>
           ))}
         </div>
       </div>
+
+      {/* ─── Color Popover ─── */}
+      {showColorPicker && (
+        <div style={styles.colorPopover}>
+          <div style={styles.colorGrid}>
+            {PRESET_COLORS.map(c => (
+              <button
+                key={c}
+                onClick={() => handleColorSelect(c)}
+                title={c}
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: '50%',
+                  backgroundColor: c,
+                  border: strokeColor === c ? '3px solid #fff' : '2px solid rgba(255,255,255,0.2)',
+                  cursor: 'pointer',
+                  padding: 0,
+                  boxShadow: strokeColor === c ? '0 0 10px rgba(255,255,255,0.5)' : 'inset 0 1px 2px rgba(0,0,0,0.3)',
+                  transition: 'all 0.15s ease'
+                }}
+                aria-label={`Select color ${c}`}
+              />
+            ))}
+          </div>
+          <div style={styles.customColorRow}>
+            <label style={styles.customLabel}>Custom</label>
+            <input
+              type="color"
+              value={strokeColor}
+              onChange={handleCustomColor}
+              style={styles.customColorInput}
+              aria-label="Custom color picker"
+            />
+            <span style={styles.hexValue}>{strokeColor}</span>
+          </div>
+          {recentColors.length > 0 && (
+            <div style={styles.recentRow}>
+              <span style={styles.recentLabel}>Recent</span>
+              <div style={styles.recentGrid}>
+                {recentColors.map(c => (
+                  <button
+                    key={c}
+                    onClick={() => handleColorSelect(c)}
+                    title={c}
+                    style={{
+                      width: 22,
+                      height: 22,
+                      borderRadius: '50%',
+                      backgroundColor: c,
+                      border: strokeColor === c ? '2px solid #fff' : '1px solid rgba(255,255,255,0.2)',
+                      cursor: 'pointer',
+                      padding: 0
+                    }}
+                    aria-label={`Select recent color ${c}`}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </>
   );
 }
 
-function ToolbarButton({ active, onClick, children, disabled, label, ariaLabel }) {
+function ToolbarButton({ active, onClick, children, disabled, label, ariaLabel, toggle }) {
+  const [hovered, setHovered] = useState(false);
   return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      aria-label={ariaLabel || label}
-      aria-pressed={active}
-      title={label}
-      style={{
-        ...styles.button,
-        ...(active ? styles.buttonActive : {}),
-        ...(disabled ? styles.buttonDisabled : {})
-      }}
-    >
-      {children}
-    </button>
+    <div style={{ position: 'relative', display: 'inline-flex' }}>
+      <button
+        onClick={onClick}
+        disabled={disabled}
+        aria-label={ariaLabel || label}
+        aria-pressed={active}
+        title={label}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        style={{
+          ...styles.button,
+          ...(active ? styles.buttonActive : {}),
+          ...(disabled ? styles.buttonDisabled : {})
+        }}
+      >
+        {children}
+      </button>
+      {/* Tooltip */}
+      {hovered && label && (
+        <div style={styles.tooltip}>
+          {label}
+        </div>
+      )}
+    </div>
   );
 }
 
 const styles = {
   container: {
     position: 'fixed',
-    left: 16,
-    top: '50%',
-    transform: 'translateY(-50%)',
+    bottom: 24,
+    left: '50%',
+    transform: 'translateX(-50%)',
     zIndex: 100,
     display: 'flex',
-    flexDirection: 'column',
+    flexDirection: 'row',
     alignItems: 'center',
     gap: 0,
-    padding: '14px 10px',
-    width: 110,
+    padding: '10px 16px',
     background: 'rgba(18, 18, 28, 0.72)',
     backdropFilter: 'blur(24px) saturate(1.6)',
     WebkitBackdropFilter: 'blur(24px) saturate(1.6)',
-    borderRadius: 22,
+    borderRadius: 20,
     border: '1px solid rgba(255, 255, 255, 0.09)',
     boxShadow: '0 12px 40px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255,255,255,0.06)',
-    maxHeight: '92vh',
-    overflowY: 'auto',
+    maxWidth: '95vw',
+    overflowX: 'auto',
     scrollbarWidth: 'none',
     msOverflowStyle: 'none'
   },
-  section: {
+  group: {
     display: 'flex',
-    flexDirection: 'column',
+    flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    width: '100%'
+    gap: 4
   },
   separator: {
-    width: 56,
-    height: 1,
+    width: 1,
+    height: 28,
     background: 'rgba(255, 255, 255, 0.08)',
-    margin: '10px 0',
+    margin: '0 10px',
     flexShrink: 0
   },
   button: {
-    width: 44,
-    height: 44,
+    width: 40,
+    height: 40,
     borderRadius: 12,
     border: 'none',
     background: 'transparent',
@@ -383,46 +449,58 @@ const styles = {
     cursor: 'not-allowed',
     color: 'rgba(255,255,255,0.3)'
   },
-  colorPicker: {
-    position: 'fixed',
-    left: 110,
-    top: '50%',
-    transform: 'translateY(-50%)',
-    display: 'grid',
-    gridTemplateColumns: 'repeat(4, 1fr)',
-    gap: 8,
-    padding: 16,
-    background: 'rgba(22, 22, 34, 0.95)',
-    backdropFilter: 'blur(20px)',
-    borderRadius: 16,
-    border: '1px solid rgba(255,255,255,0.15)',
-    boxShadow: '0 12px 40px rgba(0,0,0,0.55)',
+  tooltip: {
+    position: 'absolute',
+    bottom: -30,
+    left: '50%',
+    transform: 'translateX(-50%)',
+    padding: '4px 10px',
+    background: 'rgba(0, 0, 0, 0.85)',
+    color: '#fff',
+    fontSize: 11,
+    borderRadius: 6,
+    whiteSpace: 'nowrap',
+    pointerEvents: 'none',
     zIndex: 200,
-    minWidth: 160
+    boxShadow: '0 2px 8px rgba(0,0,0,0.3)'
   },
-  // Horizontal slider group
-  sliderGroup: {
+  colorBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: '50%',
+    border: '2px solid rgba(255,255,255,0.3)',
+    cursor: 'pointer',
+    padding: 0,
+    transition: 'all 0.2s ease',
+    flexShrink: 0
+  },
+  settingsGroup: {
     display: 'flex',
-    flexDirection: 'column',
+    flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    padding: '8px 0',
-    width: '100%'
+    gap: 12,
+    padding: '0 4px'
+  },
+  sliderRow: {
+    display: 'flex',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8
   },
   sliderLabel: {
-    fontSize: 9,
+    fontSize: 10,
     color: 'rgba(255,255,255,0.45)',
     textTransform: 'uppercase',
     letterSpacing: 0.8,
     fontWeight: 600,
-    fontFamily: 'system-ui, -apple-system, sans-serif'
+    fontFamily: 'system-ui, -apple-system, sans-serif',
+    whiteSpace: 'nowrap'
   },
   slider: {
-    width: 72,
+    width: 80,
     height: 16,
     accentColor: '#00e5ff',
-    cursor: 'pointer',
-    // Custom track styling via CSS is in index.css
+    cursor: 'pointer'
   },
   sliderValue: {
     fontSize: 10,
@@ -430,6 +508,77 @@ const styles = {
     fontVariantNumeric: 'tabular-nums',
     fontWeight: 500,
     fontFamily: 'system-ui, -apple-system, sans-serif',
-    minHeight: 14
+    minWidth: 28,
+    textAlign: 'right'
+  },
+  // Color Popover
+  colorPopover: {
+    position: 'fixed',
+    bottom: 80,
+    left: '50%',
+    transform: 'translateX(-50%)',
+    padding: 16,
+    background: 'rgba(22, 22, 34, 0.95)',
+    backdropFilter: 'blur(20px)',
+    borderRadius: 16,
+    border: '1px solid rgba(255,255,255,0.15)',
+    boxShadow: '0 12px 40px rgba(0,0,0,0.55)',
+    zIndex: 200,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 12,
+    minWidth: 220
+  },
+  colorGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(8, 1fr)',
+    gap: 8,
+    justifyItems: 'center'
+  },
+  customColorRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 10,
+    padding: '8px 0',
+    borderTop: '1px solid rgba(255,255,255,0.08)'
+  },
+  customLabel: {
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.45)',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    fontWeight: 600
+  },
+  customColorInput: {
+    width: 32,
+    height: 32,
+    border: '2px solid rgba(255,255,255,0.3)',
+    borderRadius: '50%',
+    cursor: 'pointer',
+    padding: 0,
+    background: 'none'
+  },
+  hexValue: {
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.5)',
+    fontFamily: 'monospace'
+  },
+  recentRow: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+    padding: '8px 0',
+    borderTop: '1px solid rgba(255,255,255,0.08)'
+  },
+  recentLabel: {
+    fontSize: 9,
+    color: 'rgba(255,255,255,0.4)',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8
+  },
+  recentGrid: {
+    display: 'flex',
+    gap: 6,
+    flexWrap: 'wrap'
   }
 };
